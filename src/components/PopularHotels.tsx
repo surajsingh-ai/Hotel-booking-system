@@ -96,6 +96,13 @@ const PopularHotels = ({ criteria, filters, sortBy = "popular" }: PopularHotelsP
     });
   }, [hotels, filters, sortBy]);
 
+  const openHotel = (hotel: HotelCard) => {
+    navigate(
+      `/hotel/${hotel.id}?city=${encodeURIComponent(criteria.city || hotel.city)}&checkIn=${criteria.checkIn}&checkOut=${criteria.checkOut}&adults=${criteria.adults}&rooms=${criteria.rooms}`,
+      { state: { hotel } },
+    );
+  };
+
   return (
     <section id="hotels">
       <div className="space-y-6">
@@ -112,11 +119,7 @@ const PopularHotels = ({ criteria, filters, sortBy = "popular" }: PopularHotelsP
                 <div className="grid md:grid-cols-[280px_1fr] gap-0">
                   <button
                     type="button"
-                    onClick={() =>
-                      navigate(
-                        `/hotel/${h.id}?city=${encodeURIComponent(criteria.city || h.city)}&checkIn=${criteria.checkIn}&checkOut=${criteria.checkOut}&adults=${criteria.adults}&rooms=${criteria.rooms}`
-                      )
-                    }
+                    onClick={() => openHotel(h)}
                     className="relative h-64 md:h-auto overflow-hidden text-left"
                     aria-label={`View rooms at ${h.name}`}
                   >
@@ -180,11 +183,7 @@ const PopularHotels = ({ criteria, filters, sortBy = "popular" }: PopularHotelsP
                       <Button
                         type="button"
                         className="rounded-xl gradient-cta border-0 shadow-cta"
-                        onClick={() =>
-                          navigate(
-                            `/hotel/${h.id}?city=${encodeURIComponent(criteria.city || h.city)}&checkIn=${criteria.checkIn}&checkOut=${criteria.checkOut}&adults=${criteria.adults}&rooms=${criteria.rooms}`
-                          )
-                        }
+                        onClick={() => openHotel(h)}
                       >
                         View rooms
                       </Button>

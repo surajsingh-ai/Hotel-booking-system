@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { useParams, useNavigate, useSearchParams } from "react-router-dom";
+import { useParams, useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import {
   ArrowLeft, BedDouble, CalendarClock, Car, CheckCircle2, Coffee, Dumbbell,
@@ -43,6 +43,7 @@ type HotelDetailView = Hotel & {
 
 const HotelDetail = () => {
   const { id } = useParams<{ id: string }>();
+  const location = useLocation();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const [wishlist, setWishlist] = useState(() => {
@@ -78,11 +79,17 @@ const HotelDetail = () => {
   });
 
   const hotel = useMemo(() => {
+    const stateHotel = (location.state as { hotel?: HotelDetailView } | null)?.hotel;
+    if (stateHotel && String(stateHotel.id) === id) {
+      const localByName = fallbackHotels.find((item) => item.name === stateHotel.name);
+      return { ...localByName, ...stateHotel };
+    }
+
     const apiHotel = hotelsData?.hotels?.find((h) => String(h.id) === id);
     const fallback = id ? findFallbackHotel(id) : undefined;
     const localByName = apiHotel ? fallbackHotels.find((item) => item.name === apiHotel.name) : undefined;
     return apiHotel ? { ...localByName, ...apiHotel } : fallback;
-  }, [hotelsData, id]);
+  }, [hotelsData, id, location.state]);
 
   const roomTypes = roomsData?.rooms?.length ? roomsData.rooms : getFallbackRooms(id || 1, criteria);
 
@@ -115,17 +122,17 @@ const HotelDetail = () => {
 
   const rooms: RoomVariant[] = roomTypes.map((room) => ({
     id: room.id,
-    name: room.name,
-    description: `${room.bed} with ${room.meal_plan}${room.cancellable ? " - free cancellation" : ""}`,
-    capacity: room.capacity,
-    beds: Number(room.bed.split(" ")[0]) || 1,
-    size: room.name.toLowerCase().includes("suite") ? "48 sqm" : "32 sqm",
-    price: room.nightly_price,
-    originalPrice: Math.floor(room.nightly_price * 1.25),
+    name: room.name || "Room",
+    description: `${room.bed || "Comfort bed"} with ${room.meal_plan || "room only"}${room.cancellable ? " - free cancellation" : ""}`,
+    capacity: Number(room.capacity) || criteria.adults || 2,
+    beds: Number((room.bed || "1").split(" ")[0]) || 1,
+    size: (room.name || "").toLowerCase().includes("suite") ? "48 sqm" : "32 sqm",
+    price: Number(room.nightly_price) || price,
+    originalPrice: Math.floor((Number(room.nightly_price) || price) * 1.25),
     discount: 20,
-    amenities: ["Free WiFi", "Air conditioning", "Private bathroom", room.meal_plan],
-    available: room.available_rooms >= criteria.rooms,
-    bookings: Math.max(0, 5 - (room.available_rooms || 0)),
+    amenities: ["Free WiFi", "Air conditioning", "Private bathroom", room.meal_plan || "Room only"],
+    available: Number(room.available_rooms) >= criteria.rooms,
+    bookings: Math.max(0, 5 - (Number(room.available_rooms) || 0)),
   }));
 
   return (
@@ -228,6 +235,7 @@ const HotelDetail = () => {
             </div>
 
             <GuestReviews
+              hotelName={hotel.name}
               reviews={[
                 {
                   id: 1,
@@ -250,7 +258,7 @@ const HotelDetail = () => {
                   helpful: 187,
                 },
               ]}
-              averageRating={Number(hotel.rating)}
+              overallRating={Number(hotel.rating) || 0}
               totalReviews={Number(hotel.reviews)}
             />
           </div>

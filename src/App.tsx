@@ -10,6 +10,7 @@ import Booking from "./pages/Booking.tsx";
 import MyBookings from "./pages/MyBookings.tsx";
 import NotFound from "./pages/NotFound.tsx";
 import HistoryNavigation from "./components/HistoryNavigation.tsx";
+import RouteErrorBoundary from "./components/RouteErrorBoundary.tsx";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -28,6 +29,7 @@ const App = () => (
       <Sonner />
       <BrowserRouter>
         <HistoryNavigation />
+        <RouteErrorBoundary>
         <Routes>
           <Route path="/" element={<Index />} />
           <Route path="/search" element={<SearchResults />} />
@@ -36,6 +38,7 @@ const App = () => (
           <Route path="/bookings" element={<MyBookings />} />
           <Route path="*" element={<NotFound />} />
         </Routes>
+        </RouteErrorBoundary>
       </BrowserRouter>
     </TooltipProvider>
   </QueryClientProvider>

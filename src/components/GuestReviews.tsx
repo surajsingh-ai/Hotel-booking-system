@@ -49,6 +49,8 @@ const GuestReviews = ({
   totalReviews,
   reviews,
 }: GuestReviewsProps) => {
+  const safeRating = Number.isFinite(overallRating) ? overallRating : 0;
+  const safeTotalReviews = Number.isFinite(totalReviews) ? totalReviews : 0;
   const distribution = getRatingDistribution(reviews);
   const maxCount = Math.max(...Object.values(distribution));
 
@@ -63,14 +65,14 @@ const GuestReviews = ({
         {/* Overall Rating */}
         <div className="bg-card dark:bg-card/80 rounded-2xl p-8 border border-border dark:border-white/10 shadow-card">
           <div className="text-center">
-            <div className={`inline-flex items-center justify-center size-20 rounded-full ${getReviewColor(overallRating)} text-white mb-4`}>
-              <span className="text-4xl font-bold">{overallRating.toFixed(1)}</span>
+            <div className={`inline-flex items-center justify-center size-20 rounded-full ${getReviewColor(safeRating)} text-white mb-4`}>
+              <span className="text-4xl font-bold">{safeRating.toFixed(1)}</span>
             </div>
             <p className="text-xl font-semibold text-foreground dark:text-white">
-              {ratingLabels[Math.round(overallRating) as keyof typeof ratingLabels]}
+              {ratingLabels[Math.round(safeRating) as keyof typeof ratingLabels] || "Not rated"}
             </p>
             <p className="text-sm text-muted-foreground dark:text-white/60 mt-2">
-              Based on {totalReviews.toLocaleString()} verified reviews
+              Based on {safeTotalReviews.toLocaleString()} verified reviews
             </p>
           </div>
         </div>
