@@ -9,6 +9,7 @@ import HotelDetail from "./pages/HotelDetail.tsx";
 import Booking from "./pages/Booking.tsx";
 import MyBookings from "./pages/MyBookings.tsx";
 import NotFound from "./pages/NotFound.tsx";
+import HistoryNavigation from "./components/HistoryNavigation.tsx";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -26,6 +27,7 @@ const App = () => (
       <Toaster />
       <Sonner />
       <BrowserRouter>
+        <HistoryNavigation />
         <Routes>
           <Route path="/" element={<Index />} />
           <Route path="/search" element={<SearchResults />} />
