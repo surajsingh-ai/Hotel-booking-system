@@ -54,6 +54,224 @@ export type User = {
   last_login_at: string | null;
 };
 
+export type AdminUser = {
+  id: number;
+  name: string;
+  email: string;
+  role: string;
+  last_login_at: string | null;
+};
+
+export type AdminHotel = Hotel & {
+  created_at: string;
+  room_type_count: number;
+  available_room_nights: number;
+};
+
+export type AdminReservation = Reservation & {
+  id: number;
+  hotel_name: string;
+  room_name: string;
+  city: string;
+  guest_name: string;
+  guest_email: string;
+  check_in: string;
+  check_out: string;
+  rooms: number;
+  created_at: string;
+};
+
+export type AdminRoomType = {
+  id: number;
+  hotel_id: number;
+  hotel_name: string;
+  name: string;
+  capacity: number;
+  bed: string;
+  meal_plan: string;
+  base_price: number;
+  cancellable: boolean;
+  supplier_code: string;
+};
+
+export type AdminInventoryRow = {
+  id: number;
+  stay_date: string;
+  hotel_name: string;
+  room_name: string;
+  total_rooms: number;
+  available_rooms: number;
+  blocked_rooms: number;
+  min_stay: number;
+  max_stay: number | null;
+  stop_sell: boolean;
+  price: number;
+  currency: string;
+  source: string;
+  updated_at: string;
+};
+
+function adminHeaders() {
+  const token = localStorage.getItem("staykart_admin_token");
+  return {
+    "Content-Type": "application/json",
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+  };
+}
+
+async function parseAdminResponse<T>(response: Response): Promise<T> {
+  const data = await response.json().catch(() => ({}));
+
+  if (!response.ok) {
+    throw new Error(data?.error || "Admin request failed");
+  }
+
+  return data as T;
+}
+
+export async function loginAdmin(email: string, password: string) {
+  const response = await fetch(`${API_URL}/admin/login`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email, password }),
+  });
+  return parseAdminResponse<{ token: string; admin: AdminUser }>(response);
+}
+
+export async function fetchAdminMe() {
+  const response = await fetch(`${API_URL}/admin/me`, { headers: adminHeaders() });
+  return parseAdminResponse<{ admin: AdminUser }>(response);
+}
+
+export async function fetchAdminSummary() {
+  const response = await fetch(`${API_URL}/admin/summary`, { headers: adminHeaders() });
+  return parseAdminResponse<{
+    totals: {
+      hotels: number;
+      users: number;
+      revenue: number;
+      availableRoomNights: number;
+      stoppedDates: number;
+      indexedDates: number;
+    };
+    reservations: Array<{ status: string; payment_status: string; count: number }>;
+    topSearches: Array<{ city: string; count: number }>;
+  }>(response);
+}
+
+export async function fetchAdminHotels(search = "") {
+  const params = new URLSearchParams();
+  if (search) params.set("search", search);
+  const response = await fetch(`${API_URL}/admin/hotels?${params.toString()}`, { headers: adminHeaders() });
+  return parseAdminResponse<{ hotels: AdminHotel[] }>(response);
+}
+
+export async function createAdminHotel(payload: {
+  name: string;
+  city: string;
+  area: string;
+  rating: number;
+  reviews: number;
+  price: number;
+  originalPrice: number;
+  tag: string;
+}) {
+  const response = await fetch(`${API_URL}/admin/hotels`, {
+    method: "POST",
+    headers: adminHeaders(),
+    body: JSON.stringify(payload),
+  });
+  return parseAdminResponse<{ hotel: AdminHotel }>(response);
+}
+
+export async function updateAdminHotel(id: number, payload: Partial<{
+  name: string;
+  city: string;
+  area: string;
+  rating: number;
+  reviews: number;
+  price: number;
+  originalPrice: number;
+  tag: string;
+}>) {
+  const response = await fetch(`${API_URL}/admin/hotels/${id}`, {
+    method: "PATCH",
+    headers: adminHeaders(),
+    body: JSON.stringify(payload),
+  });
+  return parseAdminResponse<{ hotel: AdminHotel }>(response);
+}
+
+export async function deleteAdminHotel(id: number) {
+  const response = await fetch(`${API_URL}/admin/hotels/${id}`, {
+    method: "DELETE",
+    headers: adminHeaders(),
+  });
+  return parseAdminResponse<{ deleted: boolean }>(response);
+}
+
+export async function fetchAdminReservations(filters: { status?: string; search?: string } = {}) {
+  const params = new URLSearchParams();
+  if (filters.status) params.set("status", filters.status);
+  if (filters.search) params.set("search", filters.search);
+  const response = await fetch(`${API_URL}/admin/reservations?${params.toString()}`, { headers: adminHeaders() });
+  return parseAdminResponse<{ reservations: AdminReservation[] }>(response);
+}
+
+export async function confirmAdminReservation(reference: string) {
+  const response = await fetch(`${API_URL}/admin/reservations/${reference}/confirm`, {
+    method: "POST",
+    headers: adminHeaders(),
+  });
+  return parseAdminResponse<{ reservation: AdminReservation }>(response);
+}
+
+export async function cancelAdminReservation(reference: string) {
+  const response = await fetch(`${API_URL}/admin/reservations/${reference}/cancel`, {
+    method: "POST",
+    headers: adminHeaders(),
+    body: JSON.stringify({ reason: "Admin cancelled" }),
+  });
+  return parseAdminResponse<{ reservation: AdminReservation }>(response);
+}
+
+export async function fetchAdminRoomTypes(hotelId = 0) {
+  const params = new URLSearchParams();
+  if (hotelId) params.set("hotelId", String(hotelId));
+  const response = await fetch(`${API_URL}/admin/room-types?${params.toString()}`, { headers: adminHeaders() });
+  return parseAdminResponse<{ roomTypes: AdminRoomType[] }>(response);
+}
+
+export async function fetchAdminInventory(roomTypeId: number) {
+  const today = new Date();
+  const to = new Date(today);
+  to.setDate(today.getDate() + 13);
+  const params = new URLSearchParams({
+    roomTypeId: String(roomTypeId),
+    from: today.toISOString().slice(0, 10),
+    to: to.toISOString().slice(0, 10),
+  });
+  const response = await fetch(`${API_URL}/admin/inventory?${params.toString()}`, { headers: adminHeaders() });
+  return parseAdminResponse<{ inventory: AdminInventoryRow[] }>(response);
+}
+
+export async function updateAdminInventory(id: number, payload: Partial<{
+  availableRooms: number;
+  totalRooms: number;
+  blockedRooms: number;
+  price: number;
+  stopSell: boolean;
+  minStay: number;
+  maxStay: number | null;
+}>) {
+  const response = await fetch(`${API_URL}/admin/inventory/${id}`, {
+    method: "PATCH",
+    headers: adminHeaders(),
+    body: JSON.stringify(payload),
+  });
+  return parseAdminResponse<{ inventory: AdminInventoryRow }>(response);
+}
+
 export async function registerUser(name: string, email: string, password: string) {
   const normalizedEmail = email.toLowerCase().trim();
   const user: User = {

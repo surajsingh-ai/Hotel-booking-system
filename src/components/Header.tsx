@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { Hotel, Menu, User, Globe, Sun, X, BookOpen, LogOut, ChevronDown } from "lucide-react";
+import { Hotel, Menu, User, Globe, Sun, X, BookOpen, LogOut, ChevronDown, ShieldCheck } from "lucide-react";
 import { useTheme } from "next-themes";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -103,6 +103,14 @@ const Header = () => {
             >
               <BookOpen className="size-4" /> My Bookings
             </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="text-white/90 hover:bg-white/10 hover:text-white"
+              onClick={() => navigate("/admin/login")}
+            >
+              <ShieldCheck className="size-4" /> Admin
+            </Button>
             {currentUser ? (
               <div className="flex items-center gap-1">
                 <Button variant="ghost" size="sm" className="text-white/90 hover:bg-white/10 hover:text-white">
@@ -175,6 +183,12 @@ const Header = () => {
               className="text-foreground/85 hover:text-primary text-2xl font-display py-3 border-b border-border transition-smooth text-left flex items-center gap-3"
             >
               <BookOpen className="size-5" /> My Bookings
+            </button>
+            <button
+              onClick={() => { setMobileOpen(false); navigate("/admin/login"); }}
+              className="text-foreground/85 hover:text-primary text-2xl font-display py-3 border-b border-border transition-smooth text-left flex items-center gap-3"
+            >
+              <ShieldCheck className="size-5" /> Admin
             </button>
           </nav>
           <div className="flex gap-3 mt-8">
