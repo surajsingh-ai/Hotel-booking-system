@@ -12,7 +12,7 @@ const AdminLogin = () => {
   const navigate = useNavigate();
   const [loading, setLoading] = useState(false);
   const [form, setForm] = useState({
-    email: "admin@staykart.local",
+    email: "admin@gmail.com",
     password: "admin123",
   });
 

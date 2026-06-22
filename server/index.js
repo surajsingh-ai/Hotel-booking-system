@@ -10,6 +10,9 @@ const CACHE_TTL_MS = 15_000;
 const LIVE_REFRESH_MS = 3_000;
 const HOLD_MINUTES = 10;
 const EXTRA_HOTEL_COUNT = 50;
+const ADMIN_SEED_EMAIL = process.env.ADMIN_EMAIL || "admin@gmail.com";
+const ADMIN_SEED_PASSWORD = process.env.ADMIN_PASSWORD || "admin123";
+const adminSessions = new Map();
 
 // Simple SHA-256 hash (no external deps needed)
 function hashPassword(password) {
@@ -34,6 +37,29 @@ function nightsBetween(checkIn, checkOut) {
 
 function bookingReference(prefix = "SK") {
   return `${prefix}-${Date.now()}-${crypto.randomBytes(3).toString("hex")}`.toUpperCase();
+}
+
+function publicAdmin(admin) {
+  return {
+    id: admin.id,
+    name: admin.name,
+    email: admin.email,
+    role: admin.role,
+    last_login_at: admin.last_login_at,
+  };
+}
+
+function requireAdmin(req, res, next) {
+  const header = req.headers.authorization || "";
+  const token = header.startsWith("Bearer ") ? header.slice(7) : "";
+  const session = token ? adminSessions.get(token) : null;
+
+  if (!session) {
+    return res.status(401).json({ error: "Admin login required" });
+  }
+
+  req.admin = session.admin;
+  next();
 }
 
 async function releaseExpiredHolds() {
@@ -124,6 +150,25 @@ async function releaseReservationInventory(client, reservation, nextStatus, next
 }
 
 async function ensureRuntimeSchema() {
+  await query(`
+    create table if not exists admin_users (
+      id bigserial primary key,
+      name text not null,
+      email text not null unique,
+      password_hash text not null,
+      role text not null default 'ADMIN',
+      created_at timestamptz not null default now(),
+      last_login_at timestamptz
+    )
+  `);
+  await query(
+    `
+      insert into admin_users (name, email, password_hash, role)
+      values ($1, $2, $3, 'SUPER_ADMIN')
+      on conflict (email) do nothing
+    `,
+    ["StayKart Admin", ADMIN_SEED_EMAIL.toLowerCase(), hashPassword(ADMIN_SEED_PASSWORD)],
+  );
   await query("alter table room_inventory add column if not exists total_rooms integer");
   await query("alter table room_inventory add column if not exists held_rooms integer not null default 0");
   await query("alter table room_inventory add column if not exists blocked_rooms integer not null default 0");
@@ -225,7 +270,6 @@ app.get("/api/hotels", async (req, res) => {
     const nights = nightsBetween(checkIn, checkOut);
 
     const params = [`%${city}%`, checkIn, checkOut, rooms, adults, nights];
-    const cityFilter = city ? "and (h.city ilike $1 or h.area ilike $1 or h.name ilike $1)" : "";
     const { rows } = await query(
       `
         with eligible_room_types as (
@@ -255,7 +299,7 @@ app.get("/api/hotels", async (req, res) => {
         from hotels h
         join eligible_room_types ert on ert.hotel_id = h.id
         where 1 = 1
-          ${cityFilter}
+          and ($1::text = '%%' or h.city ilike $1 or h.area ilike $1 or h.name ilike $1)
         group by h.id
         order by h.price, h.rating desc, h.reviews desc
         limit 24
@@ -672,7 +716,7 @@ app.post("/api/inventory/sync", async (req, res) => {
   }
 });
 
-app.get("/api/admin/inventory", async (req, res) => {
+app.get("/api/admin/inventory", requireAdmin, async (req, res) => {
   try {
     const roomTypeId = Number(req.query.roomTypeId || 0);
     const from = req.query.from || new Date().toISOString().slice(0, 10);
@@ -685,16 +729,23 @@ app.get("/api/admin/inventory", async (req, res) => {
     const { rows } = await query(
       `
         select
+          ri.id,
           ri.stay_date,
           ri.total_rooms,
           ri.available_rooms,
           ri.blocked_rooms,
+          ri.min_stay,
+          ri.max_stay,
           ri.stop_sell,
           ri.price,
           ri.currency,
           ri.source,
-          ri.updated_at
+          ri.updated_at,
+          rt.name as room_name,
+          h.name as hotel_name
         from room_inventory ri
+        join room_types rt on rt.id = ri.room_type_id
+        join hotels h on h.id = rt.hotel_id
         where ri.room_type_id = $1
           and ri.stay_date >= $2::date
           and ri.stay_date <= $3::date
@@ -751,6 +802,369 @@ app.get("/api/ops/status", async (_req, res) => {
 });
 
 // ── Auth ──────────────────────────────────────────────────────────────────
+// Admin control plane
+app.post("/api/admin/login", async (req, res) => {
+  try {
+    const { email, password } = req.body;
+    if (!email || !password) {
+      return res.status(400).json({ error: "email and password are required" });
+    }
+
+    const passwordHash = hashPassword(password);
+    const { rows } = await query(
+      `
+        update admin_users
+        set last_login_at = now()
+        where email = $1 and password_hash = $2
+        returning id, name, email, role, last_login_at
+      `,
+      [email.toLowerCase().trim(), passwordHash],
+    );
+
+    if (!rows.length) {
+      return res.status(401).json({ error: "Invalid admin credentials" });
+    }
+
+    const token = crypto.randomBytes(32).toString("hex");
+    const admin = publicAdmin(rows[0]);
+    adminSessions.set(token, { admin, createdAt: Date.now() });
+    res.json({ token, admin });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: "Unable to login admin" });
+  }
+});
+
+app.get("/api/admin/me", requireAdmin, (req, res) => {
+  res.json({ admin: req.admin });
+});
+
+app.get("/api/admin/summary", requireAdmin, async (_req, res) => {
+  try {
+    await releaseExpiredHolds();
+    const [hotels, reservations, revenue, inventory, users, searches] = await Promise.all([
+      query("select count(*)::int as total from hotels"),
+      query("select status, payment_status, count(*)::int as count from reservations group by status, payment_status order by status"),
+      query("select coalesce(sum(amount), 0)::int as total from reservations where payment_status in ('PAID', 'REFUND_PENDING')"),
+      query(`
+        select
+          coalesce(sum(available_rooms), 0)::int as available_room_nights,
+          coalesce(sum(case when stop_sell then 1 else 0 end), 0)::int as stopped_dates,
+          coalesce(count(*), 0)::int as indexed_dates
+        from room_inventory
+      `),
+      query("select count(*)::int as total from users"),
+      query("select city, count(*)::int as count from searches group by city order by count desc limit 6"),
+    ]);
+
+    res.json({
+      totals: {
+        hotels: hotels.rows[0].total,
+        users: users.rows[0].total,
+        revenue: revenue.rows[0].total,
+        availableRoomNights: inventory.rows[0].available_room_nights,
+        stoppedDates: inventory.rows[0].stopped_dates,
+        indexedDates: inventory.rows[0].indexed_dates,
+      },
+      reservations: reservations.rows,
+      topSearches: searches.rows,
+    });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: "Unable to load admin summary" });
+  }
+});
+
+app.get("/api/admin/hotels", requireAdmin, async (req, res) => {
+  try {
+    const search = String(req.query.search || "").trim();
+    const { rows } = await query(
+      `
+        select
+          h.*,
+          count(distinct rt.id)::int as room_type_count,
+          coalesce(sum(ri.available_rooms), 0)::int as available_room_nights
+        from hotels h
+        left join room_types rt on rt.hotel_id = h.id
+        left join room_inventory ri on ri.room_type_id = rt.id and ri.stay_date >= current_date and ri.stay_date < current_date + interval '30 days'
+        where $1::text = '' or h.name ilike $2 or h.city ilike $2 or h.area ilike $2
+        group by h.id
+        order by h.created_at desc, h.id desc
+        limit 80
+      `,
+      [search, `%${search}%`],
+    );
+    res.json({ hotels: rows });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: "Unable to load admin hotels" });
+  }
+});
+
+app.post("/api/admin/hotels", requireAdmin, async (req, res) => {
+  const client = await pool.connect();
+
+  try {
+    const { name, city, area, rating = 4.5, reviews = 0, price, originalPrice, tag = "Admin Added" } = req.body;
+    if (!name || !city || !area || !price) {
+      return res.status(400).json({ error: "name, city, area, and price are required" });
+    }
+
+    await client.query("begin");
+    const hotel = await client.query(
+      `
+        insert into hotels (name, city, area, rating, reviews, price, original_price, tag)
+        values ($1, $2, $3, $4, $5, $6, $7, $8)
+        returning *
+      `,
+      [name.trim(), city.trim(), area.trim(), Number(rating), Number(reviews), Number(price), Number(originalPrice || price), tag],
+    );
+
+    const roomType = await client.query(
+      `
+        insert into room_types (hotel_id, name, capacity, bed, meal_plan, base_price, cancellable, supplier_code)
+        values ($1, 'Flex Breakfast', 2, 'Queen bed', 'Breakfast included', $2, true, 'DIRECT')
+        returning *
+      `,
+      [hotel.rows[0].id, Number(price)],
+    );
+
+    await client.query(
+      `
+        insert into room_inventory (room_type_id, stay_date, available_rooms, total_rooms, price, source)
+        select $1, gs.stay_date::date, 6, 6, $2, 'DIRECT'
+        from generate_series(current_date, current_date + interval '180 days', interval '1 day') as gs(stay_date)
+        on conflict do nothing
+      `,
+      [roomType.rows[0].id, Number(price)],
+    );
+
+    searchCache.clear();
+    await client.query("commit");
+    res.status(201).json({ hotel: hotel.rows[0] });
+  } catch (error) {
+    await client.query("rollback");
+    if (error.code === "23505") {
+      return res.status(409).json({ error: "A hotel with this name already exists" });
+    }
+    console.error(error);
+    res.status(500).json({ error: "Unable to create hotel" });
+  } finally {
+    client.release();
+  }
+});
+
+app.patch("/api/admin/hotels/:id", requireAdmin, async (req, res) => {
+  try {
+    const { name, city, area, rating, reviews, price, originalPrice, tag } = req.body;
+    const { rows } = await query(
+      `
+        update hotels
+        set
+          name = coalesce($2, name),
+          city = coalesce($3, city),
+          area = coalesce($4, area),
+          rating = coalesce($5, rating),
+          reviews = coalesce($6, reviews),
+          price = coalesce($7, price),
+          original_price = coalesce($8, original_price),
+          tag = coalesce($9, tag)
+        where id = $1
+        returning *
+      `,
+      [
+        Number(req.params.id),
+        name?.trim(),
+        city?.trim(),
+        area?.trim(),
+        rating === undefined ? null : Number(rating),
+        reviews === undefined ? null : Number(reviews),
+        price === undefined ? null : Number(price),
+        originalPrice === undefined ? null : Number(originalPrice),
+        tag === undefined ? null : tag,
+      ],
+    );
+
+    if (!rows.length) {
+      return res.status(404).json({ error: "Hotel not found" });
+    }
+
+    searchCache.clear();
+    res.json({ hotel: rows[0] });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: "Unable to update hotel" });
+  }
+});
+
+app.delete("/api/admin/hotels/:id", requireAdmin, async (req, res) => {
+  try {
+    const inUse = await query("select count(*)::int as count from reservations where hotel_id = $1", [Number(req.params.id)]);
+    if (inUse.rows[0].count > 0) {
+      return res.status(409).json({ error: "Hotels with reservations cannot be deleted" });
+    }
+
+    const deleted = await query("delete from hotels where id = $1 returning id", [Number(req.params.id)]);
+    if (!deleted.rows.length) {
+      return res.status(404).json({ error: "Hotel not found" });
+    }
+
+    searchCache.clear();
+    res.json({ deleted: true });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: "Unable to delete hotel" });
+  }
+});
+
+app.get("/api/admin/room-types", requireAdmin, async (req, res) => {
+  try {
+    const hotelId = Number(req.query.hotelId || 0);
+    const { rows } = await query(
+      `
+        select rt.*, h.name as hotel_name
+        from room_types rt
+        join hotels h on h.id = rt.hotel_id
+        where $1::bigint = 0 or rt.hotel_id = $1
+        order by h.name, rt.name
+      `,
+      [hotelId],
+    );
+    res.json({ roomTypes: rows });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: "Unable to load room types" });
+  }
+});
+
+app.patch("/api/admin/inventory/:id", requireAdmin, async (req, res) => {
+  try {
+    const { availableRooms, totalRooms, blockedRooms, price, stopSell, minStay, maxStay } = req.body;
+    const { rows } = await query(
+      `
+        update room_inventory
+        set
+          available_rooms = coalesce($2, available_rooms),
+          total_rooms = coalesce($3, total_rooms),
+          blocked_rooms = coalesce($4, blocked_rooms),
+          price = coalesce($5, price),
+          stop_sell = coalesce($6, stop_sell),
+          min_stay = coalesce($7, min_stay),
+          max_stay = $8,
+          updated_at = now()
+        where id = $1
+        returning *
+      `,
+      [
+        Number(req.params.id),
+        availableRooms === undefined ? null : Math.max(Number(availableRooms), 0),
+        totalRooms === undefined ? null : Math.max(Number(totalRooms), 0),
+        blockedRooms === undefined ? null : Math.max(Number(blockedRooms), 0),
+        price === undefined ? null : Math.max(Number(price), 999),
+        stopSell === undefined ? null : Boolean(stopSell),
+        minStay === undefined ? null : Math.max(Number(minStay), 1),
+        maxStay === undefined || maxStay === "" ? null : Number(maxStay),
+      ],
+    );
+
+    if (!rows.length) {
+      return res.status(404).json({ error: "Inventory row not found" });
+    }
+
+    searchCache.clear();
+    res.json({ inventory: rows[0] });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: "Unable to update inventory" });
+  }
+});
+
+app.get("/api/admin/reservations", requireAdmin, async (req, res) => {
+  try {
+    await releaseExpiredHolds();
+    const status = String(req.query.status || "").trim();
+    const search = String(req.query.search || "").trim();
+    const { rows } = await query(
+      `
+        select
+          r.*,
+          h.name as hotel_name,
+          h.city,
+          rt.name as room_name
+        from reservations r
+        join hotels h on h.id = r.hotel_id
+        join room_types rt on rt.id = r.room_type_id
+        where ($1::text = '' or r.status = $1)
+          and ($2::text = '' or r.booking_reference ilike $3 or r.guest_name ilike $3 or r.guest_email ilike $3 or h.name ilike $3)
+        order by r.created_at desc
+        limit 120
+      `,
+      [status, search, `%${search}%`],
+    );
+    res.json({ reservations: rows });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: "Unable to load reservations" });
+  }
+});
+
+app.post("/api/admin/reservations/:reference/confirm", requireAdmin, async (req, res) => {
+  try {
+    const { rows } = await query(
+      `
+        update reservations
+        set status = 'CONFIRMED',
+            payment_status = 'PAID',
+            updated_at = now()
+        where booking_reference = $1 and status in ('HELD', 'CONFIRMED')
+        returning *
+      `,
+      [req.params.reference],
+    );
+
+    if (!rows.length) {
+      return res.status(404).json({ error: "Open reservation not found" });
+    }
+
+    res.json({ reservation: rows[0] });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: "Unable to confirm reservation" });
+  }
+});
+
+app.post("/api/admin/reservations/:reference/cancel", requireAdmin, async (req, res) => {
+  const client = await pool.connect();
+
+  try {
+    await client.query("begin");
+    const reservation = await client.query("select * from reservations where booking_reference = $1 for update", [req.params.reference]);
+    if (!reservation.rows.length) {
+      await client.query("rollback");
+      return res.status(404).json({ error: "Reservation not found" });
+    }
+
+    if (!["HELD", "CONFIRMED"].includes(reservation.rows[0].status)) {
+      await client.query("commit");
+      return res.json({ reservation: reservation.rows[0], alreadyClosed: true });
+    }
+
+    const paymentStatus = reservation.rows[0].payment_status === "PAID" ? "REFUND_PENDING" : "CANCELLED";
+    await releaseReservationInventory(client, reservation.rows[0], "CANCELLED", paymentStatus, req.body?.reason || "Admin cancelled");
+    const cancelled = await client.query("select * from reservations where booking_reference = $1", [req.params.reference]);
+
+    searchCache.clear();
+    await client.query("commit");
+    res.json({ reservation: cancelled.rows[0] });
+  } catch (error) {
+    await client.query("rollback");
+    console.error(error);
+    res.status(500).json({ error: "Unable to cancel reservation" });
+  } finally {
+    client.release();
+  }
+});
+
 app.post("/api/auth/register", async (req, res) => {
   try {
     const { name, email, password } = req.body;
